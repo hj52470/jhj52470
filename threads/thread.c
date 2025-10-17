@@ -94,6 +94,7 @@ thread_init (void)
     lock_init (&tid_lock);
     list_init (&ready_list);
     list_init (&all_list);
+    list_init (&sleep_list);
 
     /* Set up a thread structure for the running thread. */
     initial_thread = running_thread ();
@@ -139,6 +140,53 @@ thread_tick (void)
     /* Enforce preemption. */
     if (++thread_ticks >= TIME_SLICE)
         intr_yield_on_return ();
+}
+void
+thread_sleep (int 64_t ticks)
+{
+    struct thread *cur = thread_current ();
+    enum intr_level old_level;
+
+    ASSERT (intr_get_level () == INTR_OFF);
+
+    /* compute wake tick */
+    cur->wake_tick = timer_ticks () + ticks; /* timer_ticks() from devices/timer.c */
+
+    /* insert into sleep list ordered by wake_tick ascending */
+    old_level = intr_disable ();
+    struct list_elem *e;
+    for (e = list_begin (&sleep_list); e != list_end (&sleep_list);
+         e = list_next (e))
+    {
+        struct thread *t = list_entry (e, struct thread, elem);
+        if (cur->wake_tick < t->wake_tick) {
+            list_insert (e, &cur->elem);
+            break;
+        }
+    }
+    if (list_end(&sleep_list) == e)
+        list_push_back (&sleep_list, &cur->elem);
+
+    cur->status = THREAD_BLOCKED;
+    schedule ();
+    intr_set_level (old_level);
+}
+/* Wake up threads whose wake_tick <= current ticks. Called from timer interrupt. */
+void
+thread_wake_up (int64_t current_tick)
+{
+    while (!list_empty (&sleep_list))
+    {
+        struct list_elem *e = list_front (&sleep_list);
+        struct thread *t = list_entry (e, struct thread, elem);
+        if (t->wake_tick <= current_tick)
+        {
+            list_pop_front (&sleep_list);
+            thread_unblock (t);
+        }
+        else
+            break;
+    }
 }
 
 /* Prints thread statistics. */
