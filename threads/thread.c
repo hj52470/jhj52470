@@ -106,6 +106,47 @@ thread_init (void)
 /* Starts preemptive thread scheduling by enabling interrupts.
    Also creates the idle thread. */
 void
+thread_sleep(int64_t ticks)
+{
+    struct thread *cur = thread_current();
+    enum intr_level old_level;
+
+    ASSERT(intr_get_level() == INTR_OFF);
+
+    cur->wake_tick = ticks;   
+
+    old_level = intr_disable();
+    struct list_elem *e;
+    for (e = list_begin(&sleep_list); e != list_end(&sleep_list); e = list_next(e)) {
+        struct thread *t = list_entry(e, struct thread, elem);
+        if (cur->wake_tick < t->wake_tick) {
+            list_insert(e, &cur->elem);
+            break;
+        }
+    }
+    if (list_end(&sleep_list) == e)
+        list_push_back(&sleep_list, &cur->elem);
+
+    cur->status = THREAD_BLOCKED;
+    schedule();
+    intr_set_level(old_level);
+}
+
+void
+thread_wake_up(int64_t current_tick)
+{
+    while (!list_empty(&sleep_list)) {
+        struct list_elem *e = list_front(&sleep_list);
+        struct thread *t = list_entry(e, struct thread, elem);
+        if (t->wake_tick <= current_tick) {
+            list_pop_front(&sleep_list);
+            thread_unblock(t);
+        } else
+            break;
+    }
+}
+
+void
 thread_start (void)
 {
     /* Create the idle thread. */
@@ -123,11 +164,10 @@ thread_start (void)
 /* Called by the timer interrupt handler at each timer tick.
    Thus, this function runs in an external interrupt context. */
 void
-thread_tick (void)
+thread_tick(void)
 {
-    struct thread *t = thread_current ();
+    struct thread *t = thread_current();
 
-    /* Update statistics. */
     if (t == idle_thread)
         idle_ticks++;
 #ifdef USERPROG
@@ -137,10 +177,12 @@ thread_tick (void)
     else
         kernel_ticks++;
 
-    /* Enforce preemption. */
     if (++thread_ticks >= TIME_SLICE)
-        intr_yield_on_return ();
+        intr_yield_on_return();
+
+    thread_wake_up(timer_ticks());
 }
+
 void
 thread_sleep (int 64_t ticks)
 {
