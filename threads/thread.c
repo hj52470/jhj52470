@@ -73,13 +73,9 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
-/* Project 1: Priority Donation Helper Function Declarations (Definitions below) */
-void thread_donate_priority (struct thread *donor);
-void thread_update_priority (struct thread *t);
-void thread_remove_lock (struct lock *lock);
-
 /* -------------------------------------------------------------
- * 우선순위 비교 함수 (list_insert_ordered 사용을 위해)
+ * 우선순위 비교 함수
+ * A의 우선순위가 B보다 높으면 true를 반환합니다.
  * ------------------------------------------------------------- */
 bool
 thread_compare_priority (const struct list_elem *a,
@@ -100,7 +96,7 @@ thread_init (void)
     ASSERT (intr_get_level () == INTR_OFF);
 
     lock_init (&tid_lock);
-    list_init (&ready_list); // Priority Ready List
+    list_init (&ready_list);
     list_init (&all_list);
     list_init (&sleep_list);
 
@@ -313,6 +309,9 @@ thread_unblock (struct thread *t)
     /* -------------------------------------------------------------
      * [추가] 차단 해제된 스레드의 우선순위가 현재 스레드보다 높으면 선점
      * ------------------------------------------------------------- */
+    // thread_yield()는 unblock된 스레드가 아닌 현재 러닝 중인 스레드를 ready list에 넣고 스케줄링함
+    // 따라서, 여기서 바로 thread_yield()를 호출하거나, intr_yield_on_return()을 사용해도 됨
+    // 여기서는 thread_yield()를 통해 선점하도록 구현
     if (t->priority > thread_current()->priority) {
         thread_yield();
     }
@@ -674,11 +673,12 @@ thread_remove_lock (struct lock *lock)
     struct list_elem *e = list_begin(&cur->donations);
 
     // donations 리스트에서 해당 lock을 찾아서 제거
+    // (리스트는 정렬되어 있지만, 특정 락을 찾는 것은 선형 탐색이 필요함)
     while (e != list_end(&cur->donations)) {
         struct lock *l = list_entry(e, struct lock, donation_elem);
         
         if (l == lock) {
-            e = list_remove(e); // 제거
+            list_remove(e); // 제거
             break;  
         }
         e = list_next(e);
@@ -690,7 +690,7 @@ thread_remove_lock (struct lock *lock)
 
 /*
  * 주어진 스레드 T의 현재 유효 우선순위(effective priority)를 업데이트합니다.
- * priority는 base_priority와 donations 리스트에 있는 모든 락의 waiters 중 최고 우선순위 중
+ * priority는 base_priority와 donations 리스트에 있는 락의 waiters 중 최고 우선순위 중
  * 가장 높은 값으로 설정됩니다.
  */
 void
@@ -699,13 +699,12 @@ thread_update_priority (struct thread *t)
     int max_priority = t->base_priority;
 
     if (!list_empty(&t->donations)) {
-        // donations 리스트에 있는 락들의 waiters 중 최고 우선순위를 찾습니다.
-        struct list_elem *e;
+        // donations 리스트는 락의 waiters 리스트에 있는 스레드의 우선순위 순으로 정렬되어 있음.
+        // 따라서 맨 앞 요소의 락에 걸린 스레드의 우선순위만 확인하면 됨.
         
-        // donations 리스트는 우선순위 순으로 정렬되어 있으므로, 맨 앞 락의 waiters를 확인하면 됨
         struct lock *l = list_entry(list_front(&t->donations), struct lock, donation_elem);
         
-        // Lock의 waiters 리스트가 우선순위 순으로 정렬되어 있으므로, 맨 앞의 스레드를 확인
+        // Lock의 waiters 리스트 역시 우선순위 순으로 정렬되어 있으므로, 맨 앞의 스레드를 확인
         if (!list_empty(&l->waiters)) {
             struct thread *highest_waiter = list_entry(list_front(&l->waiters), struct thread, elem);
             if (highest_waiter->priority > max_priority) {
