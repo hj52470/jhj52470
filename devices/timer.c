@@ -1,94 +1,234 @@
 /* Standard C Library headers. */
+#include <debug.h>
+#include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 /* Pintos headers. */
+#include "devices/timer.h"
+#include "devices/pit.h"
+#include "threads/interrupt.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
-#include "threads/interrupt.h"
 
-/* ... (lock_init, lock_acquire 등 함수 생략) ... */
+/* The number of timer ticks per second. */
+#define TIMER_FREQ 100
 
-/* Up or "V" operation on a semaphore. ... */
+/* Global list of sleeping threads (1.1.3: timer_sleep 구현) */
+static struct list sleep_list;
+
+/* Current number of timer ticks. */
+static int64_t ticks;
+
+/* Number of loops per timer tick.
+   Initialized by timer_calibrate(). */
+static unsigned loops_per_tick;
+
+static intr_handler_func timer_interrupt;
+static bool too_many_loops (unsigned loops);
+static void busy_wait (int64_t loops);
+static void real_time_sleep (int64_t num, int32_t denom);
+static void real_time_delay (int64_t num, int32_t denom);
+
+/* Sets up the timer to interrupt TIMER_FREQ times per second,
+   and registers the corresponding interrupt. */
 void
-sema_up (struct semaphore *sema)
+timer_init (void) 
 {
-  enum intr_level old_level;
+  pit_configure_channel (0, 2, TIMER_FREQ);
+  intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+  list_init(&sleep_list); // sleep_list 초기화
+}
 
-  ASSERT (sema != NULL);
+/* Calibrates loops_per_tick, used to implement brief delays. */
+void
+timer_calibrate (void) 
+{
+  unsigned high_bit, low_bit;
 
-  old_level = intr_disable ();
-  if (!list_empty (&sema->waiters)) 
+  loops_per_tick = 1U << 10;
+  while (!too_many_loops (loops_per_tick << 1)) 
     {
-      // 1.1.2: 비효율: FIFO로 넣었기 때문에 깨울 때마다 정렬
-      list_sort(&sema->waiters, thread_priority_cmp, NULL); 
-        
-      struct thread *t = list_entry (list_pop_front (&sema->waiters), struct thread, elem);
-      thread_unblock (t);
+      loops_per_tick <<= 1;
     }
-  sema->value++;
-  intr_set_level (old_level);
-}
 
-/* 조건변수 대기열 우선순위 비교 함수 */
-static bool cond_priority_cmp (const struct list_elem *a, 
-                               const struct list_elem *b, 
-                               void *aux UNUSED)
-{
-    struct semaphore_elem *sa = list_entry (a, struct semaphore_elem, elem);
-    struct semaphore_elem *sb = list_entry (b, struct semaphore_elem, elem);
-    
-    // ❌ 비효율: 빈 리스트 체크 로직이 불완전할 수 있습니다.
-    if (list_empty (&sa->semaphore.waiters) || list_empty (&sb->semaphore.waiters)) {
-        return false;
+  high_bit = loops_per_tick;
+  while (high_bit > 0) 
+    {
+      low_bit = high_bit / 2;
+      if (!too_many_loops (low_bit + high_bit / 2))
+        {
+          loops_per_tick = low_bit + high_bit / 2;
+        }
+      high_bit /= 2;
     }
-    
-    struct list_elem *ta_elem = list_front (&sa->semaphore.waiters);
-    struct list_elem *tb_elem = list_front (&sb->semaphore.waiters);
-    
-    struct thread *ta = list_entry (ta_elem, struct thread, elem);
-    struct thread *tb = list_entry (tb_elem, struct thread, elem);
-    
-    return ta->priority > tb->priority;
 }
 
-
-/* Suspends execution of the current thread until condition in COND
-   is signaled. ... */
-void
-cond_wait (struct condition *cond, struct lock *lock)
+/* Returns the number of timer ticks since the OS booted. */
+int64_t
+timer_ticks (void) 
 {
-  // ... (기본 로직 생략) ...
-  // 1.1.2: 조건변수 대기열에 FIFO로 추가
-  list_push_back (&cond->waiters, &waiter.elem);
-
-  lock_release (lock);
-  sema_down (&waiter.semaphore);        /* Atomically block. */
-  lock_acquire (lock);
+  enum intr_level old_level = intr_disable ();
+  int64_t t = ticks;
   intr_set_level (old_level);
+  return t;
 }
 
-/* Wakes up one thread in COND's waiting list. */
-void
-cond_signal (struct condition *cond, struct lock *lock)
+/* Returns the number of timer ticks elapsed since THEN, which
+   should be a value once returned by timer_ticks(). */
+int64_t
+timer_elapsed (int64_t then) 
 {
-  enum intr_level old_level;
+  return timer_ticks () - then;
+}
+
+/* Sleeps for TICKS timer ticks.  The thread is awakened not any
+   earlier than after TICKS ticks have elapsed. */
+void
+timer_sleep (int64_t ticks)
+{
+  int64_t start = timer_ticks ();
+
+  ASSERT (intr_get_level () == INTR_ON);
   
-  ASSERT (cond != NULL);
-  ASSERT (lock != NULL);
-  ASSERT (!intr_context ());
-  ASSERT (lock_held_by_current_thread (lock));
+  if (ticks > 0) {
+    enum intr_level old_level = intr_disable();
+    
+    struct thread *curr = thread_current();
+    curr->wakeup_tick = start + ticks;
 
-  old_level = intr_disable ();
+    // ❌ 비효율: Sleep List에 우선순위 순이 아닌 FIFO 방식으로 넣습니다.
+    list_push_back(&sleep_list, &curr->sleep_elem);
 
-  if (!list_empty (&cond->waiters)) {
-    // 1.1.2: 비효율: FIFO로 넣었기 때문에 깨울 때마다 정렬
-    list_sort (&cond->waiters, cond_priority_cmp, NULL); 
-      
-    struct semaphore_elem *waiter = list_entry (list_pop_front (&cond->waiters), struct semaphore_elem, elem);
-    sema_up (&waiter->semaphore);
+    thread_block();
+    intr_set_level(old_level);
   }
-
-  intr_set_level (old_level);
 }
 
-// ... (cond_broadcast 함수 생략) ...
+/* Sleeps for approximately MS milliseconds.  Interrupts must be
+   turned on. */
+void
+timer_msleep (int64_t ms) 
+{
+  real_time_sleep (ms, 1000);
+}
+
+/* Sleeps for approximately US microseconds.  Interrupts must be
+   turned on. */
+void
+timer_usleep (int64_t us) 
+{
+  real_time_sleep (us, 1000 * 1000);
+}
+
+/* Sleeps for approximately NS nanoseconds.  Interrupts must be
+   turned on. */
+void
+timer_nsleep (int64_t ns) 
+{
+  real_time_sleep (ns, 1000 * 1000 * 1000);
+}
+
+/* Busy-waits for approximately MS milliseconds. */
+void
+timer_mdelay (int64_t ms) 
+{
+  real_time_delay (ms, 1000);
+}
+
+/* Busy-waits for approximately US microseconds. */
+void
+timer_udelay (int64_t us) 
+{
+  real_time_delay (us, 1000 * 1000);
+}
+
+/* Busy-waits for approximately NS nanoseconds. */
+void
+timer_ndelay (int64_t ns) 
+{
+  real_time_delay (ns, 1000 * 1000 * 1000);
+}
+
+/* Prints timer statistics. */
+void
+timer_print_stats (void) 
+{
+  printf ("Timer: %"PRId64" ticks\n", timer_ticks ());
+}
+
+/* Timer interrupt handler. */
+static void
+timer_interrupt (struct intr_frame *args UNUSED)
+{
+  ticks++;
+  thread_tick ();
+  
+  // 1.1.3: timer_sleep 구현 (비효율: 매 틱마다 리스트 전체 순회)
+  if (!list_empty(&sleep_list)) {
+      struct list_elem *e = list_begin(&sleep_list);
+      
+      // ❌ 비효율: 리스트 순회 중 요소를 제거하므로 반복자 관리가 까다롭습니다.
+      while (e != list_end(&sleep_list)) {
+          struct thread *t = list_entry(e, struct thread, sleep_elem);
+          
+          if (t->wakeup_tick <= ticks) {
+              e = list_remove(e);
+              thread_unblock(t);
+          } else {
+              e = list_next(e);
+          }
+      }
+  }
+}
+
+/* Returns true if LOOPS iterations waits for more than one timer
+   tick, otherwise false. */
+static bool
+too_many_loops (unsigned loops) 
+{
+  int64_t start = ticks;
+  busy_wait (loops * 2);
+  return ticks > start;
+}
+
+/* Sleeps for approximately NUM/DENOM seconds. */
+static void
+real_time_sleep (int64_t num, int32_t denom) 
+{
+  /* Convert NUM/DENOM seconds into timer ticks, rounding down.
+     This is accurate unless the denominator is larger than TICK_FREQ.
+     (In that case, we round down to 0 ticks.) */
+  int64_t ticks = num * TIMER_FREQ / denom;
+
+  ASSERT (intr_get_level () == INTR_ON);
+  if (ticks > 0)
+    timer_sleep (ticks);
+  else
+    timer_mdelay (1); 
+}
+
+/* Busy-waits for approximately NUM/DENOM seconds. */
+static void
+real_time_delay (int64_t num, int32_t denom) 
+{
+  /* Scale the numerator and denominator down by 1000 to avoid
+     the possibility of overflow. */
+  ASSERT (denom > 0);
+  while (denom >= 1000 && num > 0 && num < INT64_MAX / 1000)
+    {
+      denom /= 1000;
+      num /= 1000;
+    }
+
+  busy_wait (loops_per_tick * num / denom);
+}
+
+/* Simply calls 'asm volatile ("nop")' many times.
+   Ideally, each call should take one clock cycle. */
+static void
+busy_wait (int64_t loops) 
+{
+  while (loops-- > 0)
+    asm volatile ("nop");
+}
