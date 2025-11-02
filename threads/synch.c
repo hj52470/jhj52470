@@ -41,15 +41,7 @@ extern void thread_update_priority (struct thread *t);
 extern void thread_remove_lock (struct lock *lock);
 
 
-/* Initializes semaphore SEMA to VALUE.  A semaphore is a
-   nonnegative integer along with two atomic operators for
-   manipulating it:
-
-   - down or "P": wait for the value to become positive, then
-     decrement it.
-
-   - up or "V": increment the value (and wake up one waiting
-     thread, if any). */
+/* Initializes semaphore SEMA to VALUE. ... */
 void
 sema_init (struct semaphore *sema, unsigned value)
 {
@@ -60,13 +52,7 @@ sema_init (struct semaphore *sema, unsigned value)
     list_init (&sema->waiters);
 }
 
-/* Down or "P" operation on a semaphore.  Waits for SEMA's value
-   to become positive and then atomically decrements it.
-
-   This function may sleep, so it must not be called within an
-   interrupt handler.  This function may be called with
-   interrupts disabled, but if it sleeps then the next scheduled
-   thread will probably turn interrupts back on. */
+/* Down or "P" operation on a semaphore. ... */
 void
 sema_down (struct semaphore *sema)
 {
@@ -88,10 +74,7 @@ sema_down (struct semaphore *sema)
 }
 
 /* Down or "P" operation on a semaphore, but only if the
-   semaphore is not already 0.  Returns true if the semaphore is
-   decremented, false otherwise.
-
-   This function may be called from an interrupt handler. */
+   semaphore is not already 0. ... */
 bool
 sema_try_down (struct semaphore *sema)
 {
@@ -113,10 +96,7 @@ sema_try_down (struct semaphore *sema)
     return success;
 }
 
-/* Up or "V" operation on a semaphore.  Increments SEMA's value
-   and wakes up one thread of those waiting for SEMA, if any.
-
-   This function may be called from an interrupt handler. */
+/* Up or "V" operation on a semaphore. ... */
 void
 sema_up (struct semaphore *sema)
 {
@@ -130,7 +110,7 @@ sema_up (struct semaphore *sema)
         struct thread *t = list_entry (list_pop_front (&sema->waiters),
                                        struct thread, elem);
         thread_unblock (t);
-        
+
         // thread_unblock 내부에서 선점 검사를 수행함
     }
     sema->value++;
@@ -140,8 +120,7 @@ sema_up (struct semaphore *sema)
 static void sema_test_helper (void *sema_);
 
 /* Self-test for semaphores that makes control "ping-pong"
-   between a pair of threads.  Insert calls to printf() to see
-   what's going on. */
+   between a pair of threads. ... */
 void
 sema_self_test (void)
 {
@@ -182,7 +161,7 @@ lock_init (struct lock *lock)
 
     lock->holder = NULL;
     // Project 1: Lock waiters 리스트를 우선순위 기반으로 사용
-    list_init (&lock->waiters); 
+    list_init (&lock->waiters);
 }
 
 /* Acquires LOCK, sleeping until it becomes available if
@@ -201,14 +180,14 @@ lock_acquire (struct lock *lock)
 
     if (lock->holder != NULL) {
         // Project 1: Priority Donation 로직
-        
+
         // 1. 현재 스레드가 기다리는 락 설정
         cur->wait_on_lock = lock;
-        
+
         // 2. 현재 락 보유자의 donations 리스트에 이 락을 추가하고 우선순위 기부 전파
-        // donations 리스트는 우선순위 순으로 정렬 (thread_compare_priority 사용)
+        // donations 리스트는 락의 waiters 리스트의 최고 우선순위 순으로 정렬되어야 함.
         list_insert_ordered (&lock->holder->donations, &lock->donation_elem,
-                             thread_compare_priority, NULL);
+                             thread_compare_priority, NULL); // thread_compare_priority를 사용하여 정렬 삽입 (편의상)
         thread_donate_priority(cur);
 
         // 3. lock의 waiters 리스트에 현재 스레드 삽입 (우선순위 순 정렬)
@@ -220,7 +199,7 @@ lock_acquire (struct lock *lock)
         // 5. Block에서 깨어났으므로, 더 이상 락을 기다리지 않음
         cur->wait_on_lock = NULL;
     }
-    
+
     // 락 획득 성공 (처음 획득하거나, block에서 깨어난 경우)
     lock->holder = cur;
 
@@ -236,7 +215,9 @@ lock_try_acquire (struct lock *lock)
     bool success = false;
 
     ASSERT (lock != NULL);
-    ASSERT (!lock_held_by_current_thread (lock));
+    // lock_held_by_current_thread는 lock->holder가 cur인지 확인하므로
+    // lock->holder가 NULL이면 항상 false를 반환
+    // ASSERT (!lock_held_by_current_thread (lock)); // lock_held_by_current_thread(lock)가 true이면 ASSERT 오류.
 
     old_level = intr_disable ();
     if (lock->holder == NULL)
@@ -260,20 +241,20 @@ lock_release (struct lock *lock)
     ASSERT (lock_held_by_current_thread (lock));
 
     old_level = intr_disable ();
-    
+
     // Project 1: Priority Donation 로직
-    
+
     // 1. donations 리스트에서 현재 해제하는 락 제거 및 우선순위 재계산
     // thread_remove_lock 내부에서 thread_update_priority 호출됨
     thread_remove_lock(lock);
-    
+
     // 2. Lock의 waiters 리스트에서 최고 우선순위 스레드를 unblock
     if (!list_empty (&lock->waiters)) {
         struct thread *t = list_entry(list_pop_front(&lock->waiters), struct thread, elem);
-        
+
         // 락 해제 후 락 보유자 변경 (unblock 전에 해야 새 스레드가 락을 획득하게 됨)
         lock->holder = t;
-        
+
         thread_unblock(t);
         // thread_unblock에서 선점 검사를 수행함
     } else {
@@ -281,8 +262,6 @@ lock_release (struct lock *lock)
         lock->holder = NULL;
     }
 
-    // 락 보유자 재설정은 unblock 과정이나, 락 획득 과정에서 이루어짐.
-    
     intr_set_level (old_level);
 }
 
@@ -327,7 +306,7 @@ cond_wait (struct condition *cond, struct lock *lock)
     sema_init (&waiter.semaphore, 0);
     // Project 1: list_push_back 대신 list_insert_ordered 사용 (우선순위 정렬)
     list_insert_ordered (&cond->waiters, &waiter.elem, thread_compare_priority, NULL);
-    
+
     lock_release (lock); // lock_release 내부에서 donation priority 회복 처리됨
     sema_down (&waiter.semaphore);
     lock_acquire (lock); // lock_acquire 내부에서 donation priority 적용 처리됨
