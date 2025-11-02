@@ -16,7 +16,6 @@
 #include "devices/timer.h"
 #endif
 
-static struct list sleep_list;
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
    of thread.h for details. */
@@ -29,6 +28,7 @@ static struct list ready_list;
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
+static struct list sleep_list;
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -72,7 +72,6 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
-
 
 /* -------------------------------------------------------------
  * [추가된 함수] 우선순위 비교 함수
@@ -125,40 +124,6 @@ thread_start (void)
     sema_down (&idle_started);
 }
 
-/* Called by the timer interrupt handler at each timer tick.
-   Thus, this function runs in an external interrupt context. */
-void
-thread_tick(void)
-{
-    struct thread *t = thread_current();
-
-    if (t == idle_thread)
-        idle_ticks++;
-#ifdef USERPROG
-    else if (t->pagedir != NULL)
-        user_ticks++;
-#endif
-    else
-        kernel_ticks++;
-
-    // -------------------------------------------------------------
-    // [수정/추가] 선점형 스케줄링 로직
-    // 1. time slice 만료 시 선점 유도 (Round Robin)
-    if (++thread_ticks >= TIME_SLICE)
-        intr_yield_on_return();
-
-    // 2. Ready List의 최고 우선순위와 현재 스레드 비교 (Preemption)
-    if (!list_empty(&ready_list)) {
-        struct thread *highest_ready = list_entry(list_front(&ready_list), struct thread, elem);
-        if (highest_ready->priority > thread_current()->priority) {
-            intr_yield_on_return();
-        }
-    }
-    // -------------------------------------------------------------
-
-    thread_wake_up(timer_ticks());
-}
-
 /* thread_sleep 및 thread_wake_up 함수 (기존 코드 유지) */
 void
 thread_sleep (int64_t ticks)
@@ -206,6 +171,41 @@ thread_wake_up (int64_t current_tick)
         else
             break;
     }
+}
+
+
+/* Called by the timer interrupt handler at each timer tick.
+   Thus, this function runs in an external interrupt context. */
+void
+thread_tick(void)
+{
+    struct thread *t = thread_current();
+
+    if (t == idle_thread)
+        idle_ticks++;
+#ifdef USERPROG
+    else if (t->pagedir != NULL)
+        user_ticks++;
+#endif
+    else
+        kernel_ticks++;
+
+    // -------------------------------------------------------------
+    // [수정/추가] 선점형 스케줄링 로직
+    // 1. time slice 만료 시 선점 유도 (Round Robin)
+    if (++thread_ticks >= TIME_SLICE)
+        intr_yield_on_return();
+
+    // 2. Ready List의 최고 우선순위와 현재 스레드 비교 (Preemption)
+    if (!list_empty(&ready_list)) {
+        struct thread *highest_ready = list_entry(list_front(&ready_list), struct thread, elem);
+        if (highest_ready->priority > thread_current()->priority) {
+            intr_yield_on_return();
+        }
+    }
+    // -------------------------------------------------------------
+
+    thread_wake_up(timer_ticks());
 }
 
 /* Prints thread statistics. */
@@ -518,12 +518,11 @@ init_thread (struct thread *t, const char *name, int priority)
     t->stack = (uint8_t *)t + PGSIZE;
     
     // -------------------------------------------------------------
-    // [수정/추가] Priority Donation 및 Aging 관련 멤버 초기화
+    // [수정/추가] Priority Donation 관련 멤버 초기화
     t->base_priority = priority;
     t->priority = priority;
     t->wait_on_lock = NULL;
     list_init(&t->donations);
-    t->age = 0; // MLFQS/Aging 용. 현재 단계에서는 Priority Donation에 집중
     // -------------------------------------------------------------
     
     t->magic = THREAD_MAGIC;
@@ -640,7 +639,6 @@ thread_donate_priority (struct thread *donor)
         holder->priority = donor->priority;
         
         // Donation이 중첩될 수 있으므로, 재귀적으로 기부를 전파합니다.
-        // Holder가 또 다른 락을 기다리고 있다면, 그 락 보유자에게도 기부합니다.
         thread_donate_priority(holder);
     }
 }
@@ -660,7 +658,7 @@ thread_remove_lock (struct lock *lock)
         struct lock *l = list_entry(e, struct lock, donation_elem);
         
         if (l == lock) {
-            e = list_remove(e); // 제거 후 다음 요소로 이동
+            e = list_remove(e); // 제거
             break; 
         }
         e = list_next(e);
@@ -708,13 +706,10 @@ thread_update_priority (struct thread *t)
             intr_set_level(old_level);
         }
 
-        // T가 현재 실행 중이거나(thread_set_priority를 통해 호출된 경우),
-        // 또는 T가 다른 락을 기다리고 있어 우선순위가 변경된 경우, 
-        // Donation을 다시 전파하여 락 보유자에게 알립니다.
-        if (t == thread_current() || t->wait_on_lock != NULL) {
+        // T가 다른 락을 기다리고 있다면, 변경된 우선순위를 락 보유자에게 기부 전파
+        if (t->wait_on_lock != NULL) {
              thread_donate_priority(t);
         }
     }
 }
-
-/* ------------------------------------------------------------- */
+// -------------------------------------------------------------
