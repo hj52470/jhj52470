@@ -32,12 +32,14 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
-// -----------------------------------------------------------------
-// [추가] 락 waiters 리스트를 정렬하는 데 사용될 비교 함수 선언
+// thread.c에 정의된 우선순위 비교 함수 선언
 extern bool thread_compare_priority (const struct list_elem *a,
                                      const struct list_elem *b,
                                      void *aux UNUSED);
-// -----------------------------------------------------------------
+// thread.c에 정의된 Priority Donation 관련 함수 선언
+extern void thread_donate_priority (struct thread *donor);
+extern void thread_update_priority (struct thread *t);
+extern void thread_remove_lock (struct lock *lock);
 
 
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
@@ -55,6 +57,7 @@ sema_init (struct semaphore *sema, unsigned value)
     ASSERT (sema != NULL);
 
     sema->value = value;
+    // Project 1: waiters 리스트를 우선순위 순으로 정렬되도록 초기화
     list_init (&sema->waiters);
 }
 
@@ -76,11 +79,9 @@ sema_down (struct semaphore *sema)
     old_level = intr_disable ();
     while (sema->value == 0)
         {
-            // -------------------------------------------------------------
-            // [수정] list_push_back 대신 list_insert_ordered 사용 (우선순위 정렬)
-            list_insert_ordered (&sema->waiters, &thread_current ()->elem, 
+            // Project 1: list_push_back 대신 list_insert_ordered 사용 (우선순위 정렬)
+            list_insert_ordered (&sema->waiters, &thread_current ()->elem,
                                  thread_compare_priority, NULL);
-            // -------------------------------------------------------------
             thread_block ();
         }
     sema->value--;
@@ -126,17 +127,12 @@ sema_up (struct semaphore *sema)
 
     old_level = intr_disable ();
     if (!list_empty (&sema->waiters)) {
-        // -------------------------------------------------------------
-        // [수정] list_pop_front: 우선순위 순으로 정렬되었으므로, 맨 앞이 최고 우선순위
+        // Project 1: list_pop_front: 우선순위 순으로 정렬되었으므로, 맨 앞이 최고 우선순위
         struct thread *t = list_entry (list_pop_front (&sema->waiters),
                                        struct thread, elem);
         thread_unblock (t);
         
-        // Unblock된 스레드의 우선순위가 현재 스레드보다 높으면 선점 유도
-        if (t->priority > thread_current()->priority) {
-            thread_yield();
-        }
-        // -------------------------------------------------------------
+        // Unblock된 스레드의 우선순위가 현재 스레드보다 높으면 선점 유도 (thread_unblock에 이미 포함됨)
     }
     sema->value++;
     intr_set_level (old_level);
@@ -186,10 +182,8 @@ lock_init (struct lock *lock)
     ASSERT (lock != NULL);
 
     lock->holder = NULL;
-    // -------------------------------------------------------------
-    // [수정] semaphore 대신 waiters 리스트 초기화
-    list_init (&lock->waiters);
-    // -------------------------------------------------------------
+    // Project 1: Lock waiters 리스트를 우선순위 기반으로 사용 (sema_init 대신 list_init)
+    list_init (&lock->waiters); 
 }
 
 /* Acquires LOCK, sleeping until it becomes available if
@@ -207,14 +201,14 @@ lock_acquire (struct lock *lock)
     old_level = intr_disable ();
 
     if (lock->holder != NULL) {
-        // -------------------------------------------------------------
-        // [추가] Priority Donation 로직
+        // Project 1: Priority Donation 로직
         
         // 1. 현재 스레드가 기다리는 락 설정
         cur->wait_on_lock = lock;
         
         // 2. 현재 락 보유자의 donations 리스트에 이 락을 추가하고 우선순위 기부 전파
-        list_insert_ordered (&lock->holder->donations, &lock->donation_elem, 
+        // donations 리스트는 우선순위 순으로 정렬 (thread_compare_priority 사용)
+        list_insert_ordered (&lock->holder->donations, &lock->donation_elem,
                              thread_compare_priority, NULL);
         thread_donate_priority(cur);
 
@@ -226,7 +220,6 @@ lock_acquire (struct lock *lock)
 
         // 5. Block에서 깨어났으므로, 더 이상 락을 기다리지 않음
         cur->wait_on_lock = NULL;
-        // -------------------------------------------------------------
     }
     
     // 락 획득 성공 (처음 획득하거나, block에서 깨어난 경우)
@@ -269,26 +262,21 @@ lock_release (struct lock *lock)
 
     old_level = intr_disable ();
     
-    // -------------------------------------------------------------
-    // [추가] Priority Donation 로직
+    // Project 1: Priority Donation 로직
     
     // 1. donations 리스트에서 현재 해제하는 락 제거 및 우선순위 재계산
-    thread_remove_lock(lock); 
+    // thread_remove_lock 내부에서 thread_update_priority 호출됨
+    thread_remove_lock(lock);
     
     // 2. Lock의 waiters 리스트에서 최고 우선순위 스레드를 unblock
     if (!list_empty (&lock->waiters)) {
         struct thread *t = list_entry(list_pop_front(&lock->waiters), struct thread, elem);
         thread_unblock(t);
-        
-        // Unblock된 스레드의 우선순위가 현재 스레드보다 높으면 선점 유도
-        if (t->priority > cur->priority) {
-            thread_yield();
-        }
+        // thread_unblock에서 선점 검사를 수행하므로 별도의 yield는 필요 없음
     }
 
     // 3. 락 보유자 초기화
     lock->holder = NULL;
-    // -------------------------------------------------------------
     
     intr_set_level (old_level);
 }
@@ -306,7 +294,7 @@ lock_held_by_current_thread (const struct lock *lock)
 /* One semaphore in a list. */
 struct semaphore_elem
 {
-    struct list_elem elem;      /* List element. */
+    struct list_elem elem;     /* List element. */
     struct semaphore semaphore; /* This semaphore. */
 };
 
@@ -332,10 +320,9 @@ cond_wait (struct condition *cond, struct lock *lock)
     ASSERT (lock_held_by_current_thread (lock));
 
     sema_init (&waiter.semaphore, 0);
-    // -------------------------------------------------------------
-    // [수정] list_push_back 대신 list_insert_ordered 사용 (우선순위 정렬)
+    // Project 1: list_push_back 대신 list_insert_ordered 사용 (우선순위 정렬)
     list_insert_ordered (&cond->waiters, &waiter.elem, thread_compare_priority, NULL);
-    // -------------------------------------------------------------
+    
     lock_release (lock);
     sema_down (&waiter.semaphore);
     lock_acquire (lock);
@@ -352,12 +339,10 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
     ASSERT (lock_held_by_current_thread (lock));
 
     if (!list_empty (&cond->waiters))
-        // -------------------------------------------------------------
-        // [수정] list_pop_front: 우선순위 순으로 정렬되었으므로, 맨 앞이 최고 우선순위
+        // Project 1: list_pop_front: 우선순위 순으로 정렬되었으므로, 맨 앞이 최고 우선순위
         sema_up (&list_entry (list_pop_front (&cond->waiters),
                               struct semaphore_elem, elem)
-                        ->semaphore);
-        // -------------------------------------------------------------
+                            ->semaphore);
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by
