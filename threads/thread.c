@@ -42,9 +42,9 @@ static struct lock tid_lock;
 /* Stack frame for kernel_thread(). */
 struct kernel_thread_frame
 {
-    void *eip;              /* Return address. */
-    thread_func *function;  /* Function to call. */
-    void *aux;              /* Auxiliary data for function. */
+    void *eip;           /* Return address. */
+    thread_func *function; /* Function to call. */
+    void *aux;             /* Auxiliary data for function. */
 };
 
 /* Statistics. */
@@ -73,9 +73,13 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+/* Project 1: Priority Donation Helper Function Declarations (Definitions below) */
+void thread_donate_priority (struct thread *donor);
+void thread_update_priority (struct thread *t);
+void thread_remove_lock (struct lock *lock);
+
 /* -------------------------------------------------------------
- * [추가된 함수] 우선순위 비교 함수
- * A의 우선순위가 B보다 높으면 true를 반환합니다.
+ * 우선순위 비교 함수 (list_insert_ordered 사용을 위해)
  * ------------------------------------------------------------- */
 bool
 thread_compare_priority (const struct list_elem *a,
@@ -96,7 +100,7 @@ thread_init (void)
     ASSERT (intr_get_level () == INTR_OFF);
 
     lock_init (&tid_lock);
-    list_init (&ready_list);
+    list_init (&ready_list); // Priority Ready List
     list_init (&all_list);
     list_init (&sleep_list);
 
@@ -190,8 +194,9 @@ thread_tick(void)
     else
         kernel_ticks++;
 
-    // -------------------------------------------------------------
-    // [수정/추가] 선점형 스케줄링 로직
+    /* -------------------------------------------------------------
+     * [수정/추가] 선점형 스케줄링 로직
+     * ------------------------------------------------------------- */
     // 1. time slice 만료 시 선점 유도 (Round Robin)
     if (++thread_ticks >= TIME_SLICE)
         intr_yield_on_return();
@@ -203,7 +208,7 @@ thread_tick(void)
             intr_yield_on_return();
         }
     }
-    // -------------------------------------------------------------
+    /* ------------------------------------------------------------- */
 
     thread_wake_up(timer_ticks());
 }
@@ -264,12 +269,13 @@ thread_create (const char *name, int priority,
     /* Add to run queue. */
     thread_unblock (t);
 
-    // -------------------------------------------------------------
-    // [추가] 새로 생성된 스레드가 현재 스레드보다 우선순위가 높으면 yield
+    /* -------------------------------------------------------------
+     * [추가] 새로 생성된 스레드가 현재 스레드보다 우선순위가 높으면 yield
+     * ------------------------------------------------------------- */
     if (t->priority > thread_current()->priority) {
         thread_yield();
     }
-    // -------------------------------------------------------------
+    /* ------------------------------------------------------------- */
 
     return tid;
 }
@@ -296,12 +302,22 @@ thread_unblock (struct thread *t)
     old_level = intr_disable ();
     ASSERT (t->status == THREAD_BLOCKED);
     
-    // -------------------------------------------------------------
-    // [수정] list_push_back 대신 list_insert_ordered 사용 (우선순위 스케줄링)
+    /* -------------------------------------------------------------
+     * [수정] list_push_back 대신 list_insert_ordered 사용 (우선순위 스케줄링)
+     * ------------------------------------------------------------- */
     list_insert_ordered (&ready_list, &t->elem, thread_compare_priority, NULL);
-    // -------------------------------------------------------------
+    /* ------------------------------------------------------------- */
     
     t->status = THREAD_READY;
+    
+    /* -------------------------------------------------------------
+     * [추가] 차단 해제된 스레드의 우선순위가 현재 스레드보다 높으면 선점
+     * ------------------------------------------------------------- */
+    if (t->priority > thread_current()->priority) {
+        thread_yield();
+    }
+    /* ------------------------------------------------------------- */
+    
     intr_set_level (old_level);
 }
 
@@ -362,10 +378,11 @@ thread_yield (void)
 
     old_level = intr_disable ();
     if (cur != idle_thread)
-        // -------------------------------------------------------------
-        // [수정] list_push_back 대신 list_insert_ordered 사용 (우선순위 스케줄링)
+        /* -------------------------------------------------------------
+         * [수정] list_push_back 대신 list_insert_ordered 사용 (우선순위 스케줄링)
+         * ------------------------------------------------------------- */
         list_insert_ordered (&ready_list, &cur->elem, thread_compare_priority, NULL);
-        // -------------------------------------------------------------
+        /* ------------------------------------------------------------- */
     cur->status = THREAD_READY;
     schedule ();
     intr_set_level (old_level);
@@ -393,13 +410,14 @@ thread_set_priority (int new_priority)
 {
     struct thread *cur = thread_current();
     
-    // -------------------------------------------------------------
-    // [수정] Priority Donation 로직 반영: base_priority를 변경하고 priority를 재계산
-    int old_base_priority = cur->base_priority;
+    /* -------------------------------------------------------------
+     * [수정] Priority Donation 로직 반영: base_priority를 변경하고 priority를 재계산
+     * ------------------------------------------------------------- */
+    int old_priority = cur->priority;
     cur->base_priority = new_priority;
     
-    // 기존 base_priority가 현재 effective priority였다면, priority를 재계산해야 함
-    if (old_base_priority == cur->priority) {
+    // 락을 보유하고 있거나, 우선순위가 변경되었다면 update_priority 호출
+    if (!list_empty(&cur->donations) || old_priority != new_priority) {
         thread_update_priority(cur);
     }
     
@@ -410,17 +428,17 @@ thread_set_priority (int new_priority)
             thread_yield();
         }
     }
-    // -------------------------------------------------------------
+    /* ------------------------------------------------------------- */
 }
 
 /* Returns the current thread's priority. */
 int
 thread_get_priority (void)
 {
-    // -------------------------------------------------------------
-    // [수정] Donation이 반영된 effective priority를 반환
+    /* -------------------------------------------------------------
+     * [수정] Donation이 반영된 effective priority를 반환
+     * ------------------------------------------------------------- */
     return thread_current ()->priority;
-    // -------------------------------------------------------------
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -517,13 +535,14 @@ init_thread (struct thread *t, const char *name, int priority)
     strlcpy (t->name, name, sizeof t->name);
     t->stack = (uint8_t *)t + PGSIZE;
     
-    // -------------------------------------------------------------
-    // [수정/추가] Priority Donation 관련 멤버 초기화
+    /* -------------------------------------------------------------
+     * [수정/추가] Priority Donation 관련 멤버 초기화
+     * ------------------------------------------------------------- */
     t->base_priority = priority;
     t->priority = priority;
-    t->wait_on_lock = NULL;
-    list_init(&t->donations);
-    // -------------------------------------------------------------
+    t->wait_on_lock = NULL; // 초기에는 기다리는 락이 없음
+    list_init(&t->donations); // 기부받는 락 리스트 초기화
+    /* ------------------------------------------------------------- */
     
     t->magic = THREAD_MAGIC;
     list_push_back (&all_list, &t->allelem);
@@ -617,8 +636,9 @@ allocate_tid (void)
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
 
 
-// -------------------------------------------------------------
-// [추가된 Priority Donation 관련 함수 구현]
+/* -------------------------------------------------------------
+ * [Priority Donation Helper Functions]
+ * ------------------------------------------------------------- */
 
 /*
  * 현재 스레드 T가 lock을 기다릴 때, lock을 가진 스레드에게 자신의 우선순위를 기부합니다.
@@ -627,25 +647,25 @@ uint32_t thread_stack_ofs = offsetof (struct thread, stack);
 void
 thread_donate_priority (struct thread *donor)
 {
-    // Donor는 현재 lock을 기다리는 스레드 (락 보유자에게 기부)
-    if (donor->wait_on_lock == NULL) return; // 기다리는 락이 없으면 종료
+    // donor는 현재 lock을 기다리는 스레드
+    if (donor->wait_on_lock == NULL) return; 
 
     struct lock *lock = donor->wait_on_lock;
     struct thread *holder = lock->holder;
-    if (holder == NULL) return; // 락 보유자가 없으면 종료
+    if (holder == NULL) return; 
 
     // Donor의 우선순위가 Holder의 현재 우선순위보다 높을 경우에만 기부
     if (donor->priority > holder->priority) {
-        holder->priority = donor->priority;
+        holder->priority = donor->priority; 
         
-        // Donation이 중첩될 수 있으므로, 재귀적으로 기부를 전파합니다.
+        // Donation 체인 전파
         thread_donate_priority(holder);
     }
 }
 
 /*
  * 스레드가 lock을 해제할 때, T의 donations 리스트에서 해당 lock을 제거하고
- * 우선순위를 재계산합니다. (lock->waiters 리스트가 비거나, 스레드가 락을 해제할 때 호출)
+ * 우선순위를 재계산합니다.
  */
 void
 thread_remove_lock (struct lock *lock)
@@ -659,7 +679,7 @@ thread_remove_lock (struct lock *lock)
         
         if (l == lock) {
             e = list_remove(e); // 제거
-            break; 
+            break;  
         }
         e = list_next(e);
     }
@@ -681,15 +701,15 @@ thread_update_priority (struct thread *t)
     if (!list_empty(&t->donations)) {
         // donations 리스트에 있는 락들의 waiters 중 최고 우선순위를 찾습니다.
         struct list_elem *e;
-        for (e = list_begin(&t->donations); e != list_end(&t->donations); e = list_next(e)) {
-            struct lock *l = list_entry(e, struct lock, donation_elem);
-            
-            // Lock의 waiters 리스트가 우선순위 순으로 정렬되어 있으므로, 맨 앞의 스레드를 확인
-            if (!list_empty(&l->waiters)) {
-                struct thread *highest_waiter = list_entry(list_front(&l->waiters), struct thread, elem);
-                if (highest_waiter->priority > max_priority) {
-                    max_priority = highest_waiter->priority;
-                }
+        
+        // donations 리스트는 우선순위 순으로 정렬되어 있으므로, 맨 앞 락의 waiters를 확인하면 됨
+        struct lock *l = list_entry(list_front(&t->donations), struct lock, donation_elem);
+        
+        // Lock의 waiters 리스트가 우선순위 순으로 정렬되어 있으므로, 맨 앞의 스레드를 확인
+        if (!list_empty(&l->waiters)) {
+            struct thread *highest_waiter = list_entry(list_front(&l->waiters), struct thread, elem);
+            if (highest_waiter->priority > max_priority) {
+                max_priority = highest_waiter->priority;
             }
         }
     }
@@ -708,8 +728,7 @@ thread_update_priority (struct thread *t)
 
         // T가 다른 락을 기다리고 있다면, 변경된 우선순위를 락 보유자에게 기부 전파
         if (t->wait_on_lock != NULL) {
-             thread_donate_priority(t);
+            thread_donate_priority(t);
         }
     }
 }
-// -------------------------------------------------------------
