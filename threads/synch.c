@@ -6,58 +6,9 @@
 #include "threads/thread.h"
 #include "threads/interrupt.h"
 
-// ... (다른 함수 생략) ...
+/* ... (lock_init, lock_acquire 등 함수 생략) ... */
 
-/* Acquires a lock.  The current thread must not already hold the
-   lock. */
-void
-lock_acquire (struct lock *lock)
-{
-  ASSERT (lock != NULL);
-  ASSERT (!intr_context ());
-  ASSERT (!lock_held_by_current_thread (lock));
-
-  enum intr_level old_level = intr_disable ();
-
-  if (lock->holder != thread_current ()) 
-    {
-      // ... (우선순위 기부 로직 생략) ...
-      
-      sema_down (&lock->semaphore);
-      lock->holder = thread_current ();
-    }
-
-  intr_set_level (old_level);
-}
-
-// ... (lock_release 함수 생략) ...
-
-/* Down or "P" operation on a semaphore.  If the semaphore's value is
-   zero, the current thread blocks and is added to the semaphore's
-   waiters list.  Otherwise, the semaphore's value is decremented and
-   the current thread continues to run. */
-void
-sema_down (struct semaphore *sema)
-{
-  enum intr_level old_level;
-
-  ASSERT (sema != NULL);
-  ASSERT (!intr_context ());
-
-  old_level = intr_disable ();
-  while (sema->value == 0) 
-    {
-      // 1.1.1. 세마포어 대기열에 FIFO 방식으로 추가
-      list_push_back (&sema->waiters, &thread_current ()->elem);
-      thread_block ();
-    }
-  sema->value--;
-  intr_set_level (old_level);
-}
-
-/* Up or "V" operation on a semaphore.  Increments the semaphore's
-   value and wakes up one thread from the semaphore's waiters list,
-   if any. */
+/* Up or "V" operation on a semaphore. ... */
 void
 sema_up (struct semaphore *sema)
 {
@@ -78,9 +29,7 @@ sema_up (struct semaphore *sema)
   intr_set_level (old_level);
 }
 
-// ... (sema_try_down 함수 생략) ...
-
-/* 조건변수 대기열 우선순위 비교 함수 (1.1.2) */
+/* 조건변수 대기열 우선순위 비교 함수 */
 static bool cond_priority_cmp (const struct list_elem *a, 
                                const struct list_elem *b, 
                                void *aux UNUSED)
@@ -88,7 +37,7 @@ static bool cond_priority_cmp (const struct list_elem *a,
     struct semaphore_elem *sa = list_entry (a, struct semaphore_elem, elem);
     struct semaphore_elem *sb = list_entry (b, struct semaphore_elem, elem);
     
-    // ❌ 문제 2: list_front() 에러를 간과하고 빈 리스트 체크를 불완전하게 처리합니다.
+    // ❌ 비효율: 빈 리스트 체크 로직이 불완전할 수 있습니다.
     if (list_empty (&sa->semaphore.waiters) || list_empty (&sb->semaphore.waiters)) {
         return false;
     }
@@ -104,22 +53,11 @@ static bool cond_priority_cmp (const struct list_elem *a,
 
 
 /* Suspends execution of the current thread until condition in COND
-   is signaled.  The lock LOCK must be held before calling, and will
-   be released and reacquired atomically. */
+   is signaled. ... */
 void
 cond_wait (struct condition *cond, struct lock *lock)
 {
-  struct semaphore_elem waiter;
-
-  ASSERT (cond != NULL);
-  ASSERT (lock != NULL);
-  ASSERT (!intr_context ());
-  ASSERT (lock_held_by_current_thread (lock));
-
-  enum intr_level old_level = intr_disable ();
-  waiter.thread = thread_current ();
-  sema_init (&waiter.semaphore, 0);
-
+  // ... (기본 로직 생략) ...
   // 1.1.2: 조건변수 대기열에 FIFO로 추가
   list_push_back (&cond->waiters, &waiter.elem);
 
