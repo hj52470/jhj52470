@@ -129,7 +129,7 @@ thread_start (void)
  * [Project 1: Alarm Clock] thread_sleep, thread_wake_up
  * ------------------------------------------------------------- */
 void
-thread_sleep (int64_t ticks) // 오타 수정: int64_t
+thread_sleep (int64_t ticks) // 오타 수정: int64_t 붙여쓰기
 {
     struct thread *cur = thread_current ();
     enum intr_level old_level;
@@ -163,7 +163,7 @@ thread_sleep (int64_t ticks) // 오타 수정: int64_t
 
 /* Wake up threads whose wake_tick <= current ticks. Called from timer interrupt. */
 void
-thread_wake_up (int64_t current_tick)
+thread_wake_up (int64_t current_tick) // 중복 정의 제거됨 (136행의 원형을 유지)
 {
     // sleep_list는 wake_tick 순으로 정렬되어 있으므로, 맨 앞에서부터 확인
     while (!list_empty (&sleep_list))
