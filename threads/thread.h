@@ -98,7 +98,10 @@ struct thread
     struct list donations;  /* List of locks/donations received (ordered by waiter priority). */
     struct list_elem donation_elem; /* Element for the holder's donations list. */
     // -----------------------------------------------------------------
-
+int base_priority;          /* 기본 우선순위 (Donation 복구용) */
+    struct lock *wait_on_lock;  /* 기다리고 있는 락 (Donation 체인용) */
+    struct list donations;      /* 기부받고 있는 락들의 리스트 (우선순위 순) */
+    struct list_elem donation_elem; /* donations 리스트용 요소 */
     int64_t wake_tick;      /* Timer tick to wake up at (for sleeping threads) */
     struct list_elem allelem; /* List element for all threads list. */
 
