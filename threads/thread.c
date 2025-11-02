@@ -73,6 +73,7 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -125,7 +126,17 @@ thread_sleep(int64_t ticks)
         }
     }
     if (list_end(&sleep_list) == e)
-        list_push_back(&sleep_list, &cur->elem);
+      
+enum intr_level old_level;
+
+ASSERT (t->status == THREAD_BLOCKED);
+
+old_level = intr_disable ();
+
+list_insert_ordered (&ready_list, &t->elem, thread_compare_priority, NULL);
+
+t->status = THREAD_READY;
+intr_set_level (old_level);
 
     cur->status = THREAD_BLOCKED;
     schedule();
