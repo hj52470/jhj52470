@@ -22,7 +22,7 @@ struct lock
 {
     struct thread *holder;       /* Thread holding lock (for debugging). */
     // -----------------------------------------------------------------
-    // [수정] Priority Donation을 위해 semaphore를 waiters 리스트로 대체
+    // [수정] Priority Donation을 위해 semaphore 대신 waiters 리스트 사용
     struct list waiters;         /* List of waiting threads (ordered by priority). */
     struct list_elem donation_elem; /* Element for the holder's donations list. */
     // -----------------------------------------------------------------
@@ -34,11 +34,23 @@ bool lock_try_acquire (struct lock *);
 void lock_release (struct lock *);
 bool lock_held_by_current_thread (const struct lock *);
 
-/* Condition variable. (생략) */
+/* Condition variable. */
 struct condition
-// ... (기존 코드 유지) ...
+{
+    struct list waiters; /* List of waiting threads. */
+};
 
-/* Optimization barrier. (생략) */
+void cond_init (struct condition *);
+void cond_wait (struct condition *, struct lock *);
+void cond_signal (struct condition *, struct lock *);
+void cond_broadcast (struct condition *, struct lock *);
+
+/* Optimization barrier.
+
+   The compiler will not reorder operations across an
+   optimization barrier.  See "Optimization Barriers" in the
+   reference guide for more information.*/
+
 #define barrier() asm volatile ("" : : : "memory")
 
 #endif /* threads/synch.h */
