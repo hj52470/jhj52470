@@ -32,11 +32,10 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
-// thread.c에 정의된 우선순위 비교 함수 선언
+// thread.c에 정의된 Priority Donation 및 비교 함수 선언
 extern bool thread_compare_priority (const struct list_elem *a,
                                      const struct list_elem *b,
                                      void *aux UNUSED);
-// thread.c에 정의된 Priority Donation 관련 함수 선언
 extern void thread_donate_priority (struct thread *donor);
 extern void thread_update_priority (struct thread *t);
 extern void thread_remove_lock (struct lock *lock);
@@ -132,7 +131,7 @@ sema_up (struct semaphore *sema)
                                        struct thread, elem);
         thread_unblock (t);
         
-        // Unblock된 스레드의 우선순위가 현재 스레드보다 높으면 선점 유도 (thread_unblock에 이미 포함됨)
+        // thread_unblock 내부에서 선점 검사를 수행함
     }
     sema->value++;
     intr_set_level (old_level);
@@ -182,7 +181,7 @@ lock_init (struct lock *lock)
     ASSERT (lock != NULL);
 
     lock->holder = NULL;
-    // Project 1: Lock waiters 리스트를 우선순위 기반으로 사용 (sema_init 대신 list_init)
+    // Project 1: Lock waiters 리스트를 우선순위 기반으로 사용
     list_init (&lock->waiters); 
 }
 
@@ -271,12 +270,18 @@ lock_release (struct lock *lock)
     // 2. Lock의 waiters 리스트에서 최고 우선순위 스레드를 unblock
     if (!list_empty (&lock->waiters)) {
         struct thread *t = list_entry(list_pop_front(&lock->waiters), struct thread, elem);
+        
+        // 락 해제 후 락 보유자 변경 (unblock 전에 해야 새 스레드가 락을 획득하게 됨)
+        lock->holder = t;
+        
         thread_unblock(t);
-        // thread_unblock에서 선점 검사를 수행하므로 별도의 yield는 필요 없음
+        // thread_unblock에서 선점 검사를 수행함
+    } else {
+        // 기다리는 스레드가 없으면 락 보유자 해제
+        lock->holder = NULL;
     }
 
-    // 3. 락 보유자 초기화
-    lock->holder = NULL;
+    // 락 보유자 재설정은 unblock 과정이나, 락 획득 과정에서 이루어짐.
     
     intr_set_level (old_level);
 }
@@ -323,9 +328,9 @@ cond_wait (struct condition *cond, struct lock *lock)
     // Project 1: list_push_back 대신 list_insert_ordered 사용 (우선순위 정렬)
     list_insert_ordered (&cond->waiters, &waiter.elem, thread_compare_priority, NULL);
     
-    lock_release (lock);
+    lock_release (lock); // lock_release 내부에서 donation priority 회복 처리됨
     sema_down (&waiter.semaphore);
-    lock_acquire (lock);
+    lock_acquire (lock); // lock_acquire 내부에서 donation priority 적용 처리됨
 }
 
 /* If any threads are waiting on COND (protected by LOCK), then
