@@ -28,7 +28,7 @@ static struct list ready_list;
 static struct list all_list;
 
 /* List of sleeping processes. [Project 1: Alarm Clock] */
-static struct list sleep_list;
+struct list sleep_list; // static 제거: thread.h의 extern 선언을 따름
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -129,7 +129,7 @@ thread_start (void)
  * [Project 1: Alarm Clock] thread_sleep, thread_wake_up
  * ------------------------------------------------------------- */
 void
-thread_sleep (int64_t ticks)
+thread_sleep (int64_t ticks) // 오타 수정: int64_t
 {
     struct thread *cur = thread_current ();
     enum intr_level old_level;
@@ -761,12 +761,7 @@ thread_update_priority (struct thread *t)
 
     // donations 리스트에서 가장 높은 우선순위를 찾음
     if (!list_empty(&t->donations)) {
-        // donations 리스트는 list_insert_ordered로 정렬되지 않고 lock_acquire 시 삽입되므로,
-        // donations 리스트를 순회하며 락의 waiters 리스트 중 최고 우선순위를 찾아야 함.
-        // 하지만 Pintos 구현에서는 donations 리스트 자체가 (락을 기다리는 스레드의) 우선순위 순으로 정렬되도록 요구함.
-        // 따라서, donations 리스트의 맨 앞 요소가 가장 높은 우선순위를 기부한 락을 나타낸다고 가정합니다.
-        // (synch.c의 lock_acquire에서 donations 리스트를 정렬하여 삽입하도록 구현했음)
-
+        // donations 리스트는 락의 waiters 리스트의 최고 우선순위 순으로 정렬되어 있어야 함.
         struct lock *highest_donated_lock = list_entry(list_front(&t->donations), struct lock, donation_elem);
 
         // Lock의 waiters 리스트 역시 우선순위 순으로 정렬되어 있으므로, 맨 앞의 스레드를 확인
