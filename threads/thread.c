@@ -80,10 +80,16 @@ static tid_t allocate_tid (void);
 bool thread_priority_cmp (const struct list_elem *a,
                           const struct list_elem *b,
                           void *aux UNUSED);
+// Comparator for sleep list (Earliest wakeup time first)
+bool thread_sleep_cmp (const struct list_elem *a,
+                       const struct list_elem *b,
+                       void *aux UNUSED);
 // Preemption check for the current running thread
 void thread_test_preemption(void);
 // Check for threads to wake up (for Alarm Clock)
 void thread_check_wakeup(int64_t current_tick);
+// Puts the current thread to sleep until WAKEUP_TICK
+void thread_sleep (int64_t wakeup_tick);
 
 
 /* Initializes the threading system. */
@@ -338,6 +344,32 @@ thread_unblock (struct thread *t)
   t->status = THREAD_READY;
 }
 
+/* Puts the current thread to sleep until WAKEUP_TICK. 
+   The current thread must not be the idle thread. */
+void
+thread_sleep (int64_t wakeup_tick)
+{
+    struct thread *curr = thread_current();
+    enum intr_level old_level;
+
+    // 인터럽트 컨텍스트 밖에서만 호출 가능
+    ASSERT (!intr_context());
+    
+    old_level = intr_disable();
+
+    if (curr != idle_thread) {
+        // 1. 깨어날 시간 설정
+        curr->wakeup_tick = wakeup_tick;
+        // 2. sleep_list에 정렬하여 삽입 (가장 빨리 깰 스레드가 맨 앞으로 오도록)
+        list_insert_ordered(&sleep_list, &curr->elem, thread_sleep_cmp, NULL);
+        // 3. 스레드 블록 (스케줄러 호출)
+        thread_block(); 
+    }
+
+    intr_set_level(old_level);
+}
+
+
 /* Returns the current thread's priority. */
 int
 thread_get_priority (void)
@@ -490,6 +522,19 @@ bool thread_priority_cmp (const struct list_elem *a,
     return ta->priority > tb->priority;
 }
 
+/* Comparator for the sleep list (earliest wakeup time first).
+   Returns true if thread A should wake up before thread B. */
+bool thread_sleep_cmp (const struct list_elem *a,
+                       const struct list_elem *b,
+                       void *aux UNUSED)
+{
+    struct thread *ta = list_entry (a, struct thread, elem);
+    struct thread *tb = list_entry (b, struct thread, elem);
+    // 오름차순 정렬 (ta의 wakeup_tick이 tb보다 작으면 TRUE)
+    return ta->wakeup_tick < tb->wakeup_tick;
+}
+
+
 /* Compares the current running thread's priority with the highest priority
    in the ready list. Yields if the current thread is lower.
    This function MUST be called from a thread context (!intr_context()). */
@@ -525,10 +570,9 @@ thread_check_wakeup(int64_t current_tick)
         }
         else
         {
-            // sleep_list는 정렬되어 있다고 가정하면, 
-            // 현재 스레드가 깨어날 시간이 안 되었다면 뒤의 스레드도 시간이 안 되었을 것이다.
-            // (최소 틱을 추적하지 않는 간단 구현을 위해 일단은 전체 순회)
-            e = list_next (e);
+            // sleep_list가 wakeup_tick 오름차순으로 정렬되어 있다면, 
+            // 현재 스레드가 시간이 안 되었다면 뒤의 스레드도 시간이 안 되었을 것이므로 반복을 멈춥니다.
+            break; 
         }
     }
 }
