@@ -126,7 +126,7 @@ int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
 void thread_sleep(int64_t ticks);
-void thread_wake_up(int64_t ticks_now);
+void thread_wake_up(int64_t current_tick);
 
 /* -----------------------------------------------------------------
  * [Project 1: Utility & Donation Function Prototypes]
