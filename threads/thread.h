@@ -142,5 +142,12 @@ int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 void thread_sleep(int64_t ticks);
 void thread_wake_up(int64_t ticks_now);
+/* threads/thread.h */
+struct thread
+{
+    /* ... 기존 멤버 변수들 ... */
+    int priority;             /* Thread priority. */
+    /* ... */
+};
 
 #endif /* threads/thread.h */
