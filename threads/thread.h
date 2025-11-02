@@ -5,7 +5,8 @@
 #include <list.h>
 #include <stdint.h>
 #include <inttypes.h>
-#include "threads/synch.h" // struct lock 정의가 필요하므로 synch.h 포함
+#include "threads/synch.h"
+#include "threads/fixed-point.h" // Fixed-Point Arithmetic 포함
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -27,13 +28,7 @@ typedef int tid_t;
 #define PRI_MAX 63     /* Highest priority. */
 
 /* A kernel thread or user process.
-   ... (설명은 생략) ...
-   The `elem' member has a dual purpose.  It can be an element in
-   the run queue (thread.c), or it can be an element in a
-   semaphore wait list (synch.c).  It can be used these two ways
-   only because they are mutually exclusive: only a thread in the
-   ready state is on the run queue, whereas only a thread in the
-   blocked state is on a semaphore wait list. */
+   ... */
 struct thread
 {
     /* Owned by thread.c. */
@@ -44,14 +39,20 @@ struct thread
     int priority;           /* Current effective priority (may be boosted by donation). */
     
     /* -----------------------------------------------------------------
-     * [추가된 멤버] Project 1: Priority Donation
+     * [Project 1: Priority Donation]
      * ----------------------------------------------------------------- */
     int base_priority;          /* Base priority (original priority). */
     struct lock *wait_on_lock;  /* The lock the thread is currently waiting on. */
     struct list donations;      /* List of locks/donations received (ordered by waiter priority). */
     struct list_elem donation_elem; /* Element for the lock's donation list (used by the holder). */
-    /* ----------------------------------------------------------------- */
     
+    /* -----------------------------------------------------------------
+     * [Project 1: MLFQS]
+     * ----------------------------------------------------------------- */
+    int nice;                   /* Nice value. Default 0. */
+    fixed_t recent_cpu;         /* Recent CPU usage, in fixed-point. */
+    /* ----------------------------------------------------------------- */
+
     int64_t wake_tick;      /* Timer tick to wake up at (for sleeping threads) */
     struct list_elem allelem; /* List element for all threads list. */
 
@@ -68,29 +69,30 @@ struct thread
 };
 
 /* -----------------------------------------------------------------
- * [수정된 멤버] Project 1: Lock Donation을 위한 멤버 추가
- * synch.h에도 정의되어야 하지만, thread.h에 synch.h가 포함되어 있어 여기에 정의합니다.
+ * [Project 1: Lock Structure Addition] (synch.h에 포함됨)
  * ----------------------------------------------------------------- */
 struct lock
 {
     struct thread *holder;      /* Thread holding lock (or NULL). */
-    struct list waiters;        /* Waiting threads. */
+    struct list waiters;        /* Waiting threads (priority ordered). */
     
     /* Project 1: Lock Donation Field */
     struct list_elem donation_elem; /* 락이 Holder의 donations 리스트에 들어갈 때 사용 */
 };
 
-/* -----------------------------------------------------------------
- * [수정된 멤버] Project 1: Lock Donation을 위한 멤버 추가
- * Conditioon Variable의 semaphore_elem 구조체는 synch.c에 정의되어 있습니다.
- * ----------------------------------------------------------------- */
-
-
 extern struct list sleep_list;
+
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
+
+/* -----------------------------------------------------------------
+ * [Project 1: MLFQS Global Variable]
+ * ----------------------------------------------------------------- */
+extern fixed_t load_avg; /* System load average, in fixed-point. */
+/* ----------------------------------------------------------------- */
+
 
 void thread_init (void);
 void thread_start (void);
@@ -127,7 +129,7 @@ void thread_sleep(int64_t ticks);
 void thread_wake_up(int64_t ticks_now);
 
 /* -----------------------------------------------------------------
- * [추가된 함수 원형] Priority Donation 및 스케줄링 유틸리티
+ * [Project 1: Utility & Donation Function Prototypes]
  * ----------------------------------------------------------------- */
 /* Comparison function for ready_list and synch object waiters. */
 bool thread_compare_priority (const struct list_elem *a,
@@ -138,6 +140,12 @@ bool thread_compare_priority (const struct list_elem *a,
 void thread_donate_priority (struct thread *donor);
 void thread_remove_lock (struct lock *lock);
 void thread_update_priority (struct thread *t);
+
+/* MLFQS Helper functions */
+void thread_calculate_priority (struct thread *t);
+void thread_calculate_recent_cpu (struct thread *t);
+void thread_update_recent_cpu_and_load_avg (void);
+void thread_update_all_priority (void);
 /* ----------------------------------------------------------------- */
 
 
