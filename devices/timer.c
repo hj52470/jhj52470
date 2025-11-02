@@ -49,7 +49,7 @@ timer_calibrate (void)
     printf ("Calibrating timer...  ");
 
     /* Approximate loops_per_tick as the largest power-of-two
-     still less than one timer tick. */
+       still less than one timer tick. */
     loops_per_tick = 1u << 10;
     while (!too_many_loops (loops_per_tick << 1))
         {
@@ -92,8 +92,15 @@ timer_sleep (int64_t ticks)
     int64_t start = timer_ticks ();
 
     ASSERT (intr_get_level () == INTR_ON);
-    while (timer_elapsed (start) < ticks)
-        thread_yield ();
+    // -------------------------------------------------------------
+    // [수정] thread_sleep 함수를 호출하도록 변경 (Alarm Clock 구현)
+    if (ticks > 0)
+        thread_sleep(ticks);
+    else
+        // 틱이 0 이하면, 원래대로 busy-wait하거나 yield
+        while (timer_elapsed (start) < ticks)
+            thread_yield ();
+    // -------------------------------------------------------------
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -172,7 +179,10 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
     ticks++;
     thread_tick ();
-   thread_wake_up (ticks);
+    // -------------------------------------------------------------
+    // [유지/확인] thread_wake_up 호출 유지
+    thread_wake_up (ticks);
+    // -------------------------------------------------------------
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
@@ -213,25 +223,25 @@ static void
 real_time_sleep (int64_t num, int32_t denom)
 {
     /* Convert NUM/DENOM seconds into timer ticks, rounding down.
-          
-        (NUM / DENOM) s          
-     ---------------------- = NUM * TIMER_FREQ / DENOM ticks. 
+            
+       (NUM / DENOM) s              
+     ---------------------- = NUM * TIMER_FREQ / DENOM ticks.  
      1 s / TIMER_FREQ ticks
-  */
+    */
     int64_t ticks = num * TIMER_FREQ / denom;
 
     ASSERT (intr_get_level () == INTR_ON);
     if (ticks > 0)
         {
             /* We're waiting for at least one full timer tick.  Use
-         timer_sleep() because it will yield the CPU to other
-         processes. */
+               timer_sleep() because it will yield the CPU to other
+               processes. */
             timer_sleep (ticks);
         }
     else
         {
             /* Otherwise, use a busy-wait loop for more accurate
-         sub-tick timing. */
+               sub-tick timing. */
             real_time_delay (num, denom);
         }
 }
@@ -241,7 +251,7 @@ static void
 real_time_delay (int64_t num, int32_t denom)
 {
     /* Scale the numerator and denominator down by 1000 to avoid
-     the possibility of overflow. */
+       the possibility of overflow. */
     ASSERT (denom % 1000 == 0);
     busy_wait (loops_per_tick * num / 1000 * TIMER_FREQ / (denom / 1000));
 }
